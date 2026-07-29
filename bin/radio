@@ -1,0 +1,150 @@
+#!/bin/sh
+
+set -eu
+
+usage() {
+  printf '%s\n' 'Usage: radio {sleep|liquid|giants}' >&2
+}
+
+if [ "$#" -ne 1 ]; then
+  usage
+  exit 2
+fi
+
+mode=$1
+case "$mode" in
+  sleep|liquid|giants) ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+command -v ffplay >/dev/null 2>&1 || {
+  printf '%s\n' 'radio: ffplay is missing (install FFmpeg with your package manager)' >&2
+  exit 1
+}
+
+banner() {
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    printf '\033[38;5;%sm' "$1"
+    cat
+    printf '\033[0m'
+  else
+    cat
+  fi
+}
+
+case "$mode" in
+  sleep)
+    nitejar_cookie=${NITEJAR_COOKIE:-}
+    unset NITEJAR_COOKIE
+    case "$nitejar_cookie" in
+      ''|*[!0123456789abcdef]*)
+        printf '%s\n' 'radio: NITEJAR_COOKIE must be a 64-character lowercase SHA-256 value' >&2
+        exit 1
+        ;;
+    esac
+    if [ "${#nitejar_cookie}" -ne 64 ]; then
+      printf '%s\n' 'radio: NITEJAR_COOKIE must be a 64-character lowercase SHA-256 value' >&2
+      exit 1
+    fi
+
+    banner 110 <<'ART'
+                   .       *
+       *       .                    .
+                   _..._
+                .:::::::.
+               :::::::::::
+               :::::::'
+               `:::::'
+                  `'
+
+ _   _ ___ _____ _____      _    _    ____
+| \ | |_ _|_   _| ____|    | |  / \  |  _ \
+|  \| || |  | | |  _|   _  | | / _ \ | |_) |
+| |\  || |  | | | |___ | |_| |/ ___ \|  _ <
+|_| \_|___| |_| |_____| \___//_/   \_\_| \_\
+                 [ A M B I E N T ]
+
+ART
+    station='Nitejar'
+    # ffplay wants the header CRLF-terminated: $(printf '\r') keeps the CR and the
+    # quoted line break supplies the LF. The cookie is validated above so it
+    # cannot inject another header.
+    header="Cookie: nj_awake=$nitejar_cookie$(printf '\r')
+"
+    set -- -headers "$header" -i 'https://nitejar.net/stream/nightjar.opus'
+    ;;
+
+  liquid)
+    banner 45 <<'ART'
+                    .
+                   / \
+                  /   \
+                 /     \
+                /       \
+               |         |
+                \       /
+                 '.___.'
+             _.-'     '-._
+       _..--'             '--.._
+ ~~~~~~      ~~~~   ~~~~       ~~~~~~
+
+ _     ___  ___  _   _ ___ ____
+| |   |_ _|/ _ \| | | |_ _|  _ \
+| |    | || | | | | | || || | | |
+| |___ | || |_| | |_| || || |_| |
+|_____|___|\__\_\\___/|___|____/
+          [ J A Z Z Y  D R U M  &  B A S S ]
+
+ART
+    station='Liquid DnB'
+    set -- -i 'https://antares.dribbcast.com/proxy/dave1/stream/;'
+    ;;
+
+  giants)
+    banner 208 <<'ART'
+                 .-""""""""-.
+              .-'            '-.
+            .'   /`-.      .-'\   '.
+           /    /-/          \-\    \
+          ;    /-/            \-\    ;
+          |   /-/              \-\   |
+          |  ( (       SF       ) )  |
+          |   \-\              /-/   |
+          ;    \-\            /-/    ;
+           \    \-\          /-/    /
+            '.   \`-.      .-'/   .'
+              '-.            .-'
+                 '-.______.-'
+
+  ____ ___    _    _   _ _____ ____
+ / ___|_ _|  / \  | \ | |_   _/ ___|
+| |  _ | |  / _ \ |  \| | | | \___ \
+| |_| || | / ___ \| |\  | | |  ___) |
+ \____|___/_/   \_\_| \_| |_| |____/
+             [ S A N  F R A N C I S C O ]
+
+ART
+    station='KNBR 104.5 FM / 680 AM'
+    set -- -i 'https://playerservices.streamtheworld.com/api/livestream-redirect/KNBRAMAAC.aac'
+    ;;
+
+esac
+
+printf '%s\n' "Playing $station — press q or Ctrl-C to stop."
+
+# -reconnect_on_network_error needs FFmpeg >= 4.4; ffplay exits on options it
+# does not know, so 4.4 is this script's effective floor.
+exec ffplay \
+  -hide_banner \
+  -nodisp \
+  -nostats \
+  -loglevel warning \
+  -reconnect 1 \
+  -reconnect_at_eof 1 \
+  -reconnect_on_network_error 1 \
+  -reconnect_streamed 1 \
+  -reconnect_delay_max 5 \
+  "$@"
