@@ -35,6 +35,12 @@ banner() {
   fi
 }
 
+# Now-playing metadata source for the selected station; empty np_url means the
+# station has none (KNBR is talk programming, not tracks).
+np_url=''
+np_kind=''
+np_cookie=''
+
 case "$mode" in
   sleep)
     nitejar_cookie=${NITEJAR_COOKIE:-}
@@ -75,6 +81,11 @@ ART
     header="Cookie: nj_awake=$nitejar_cookie$(printf '\r')
 "
     set -- -headers "$header" -i 'https://nitejar.net/stream/nightjar.opus'
+    # The title lives on the MP3 mount in status-json (the Opus mount carries
+    # none), exactly as the Nitejar web player reads it. Same gate cookie.
+    np_url='https://nitejar.net/stream/status-json.xsl'
+    np_kind='icecast'
+    np_cookie="nj_awake=$nitejar_cookie"
     ;;
 
   liquid)
@@ -101,6 +112,9 @@ ART
 ART
     station='Liquid DnB'
     set -- -i 'https://antares.dribbcast.com/proxy/dave1/stream/;'
+    # Shoutcast v2 serves the current song as one line of plain text.
+    np_url='https://antares.dribbcast.com/proxy/dave1/currentsong?sid=1'
+    np_kind='text'
     ;;
 
   giants)
@@ -133,11 +147,98 @@ ART
 
 esac
 
+# Now playing: a background poller fetches the station's status endpoint and
+# prints the track title when it changes. Status endpoints, never a second
+# audio connection — a poll costs bytes, not a listener slot. curl is a soft
+# dependency: without it the station plays exactly as before, just untitled.
+
+np_fetch() {
+  # curl -m bounds time, not bytes; dd caps a hostile endpoint at 8 KiB per
+  # poll so neither the shell variable holding the title nor sed's line buffer
+  # can be grown without bound.
+  if [ -n "$np_cookie" ]; then
+    curl -fs -m 10 -H "Cookie: $np_cookie" "$np_url"
+  else
+    curl -fs -m 10 "$np_url"
+  fi | dd bs=1 count=8192 2>/dev/null
+}
+
+np_title() {
+  # The tr is an ASCII whitelist, not a control-byte blocklist: C0 controls,
+  # DEL, UTF-8-encoded C1 controls (8-bit CSI/OSC), and bidi overrides must
+  # all die before a station-controlled title reaches the terminal, and a
+  # blocklist misses the multi-byte forms. LC_ALL=C keeps sed and tr
+  # byte-oriented (BSD builds abort on bytes invalid in a UTF-8 locale);
+  # cut bounds the printed line and is safe here because the whitelist has
+  # already reduced the stream to single-byte characters.
+  case "$np_kind" in
+    icecast)
+      np_fetch | LC_ALL=C sed -n 's/.*"listenurl":"[^"]*nightjar\.mp3"[^}]*"title":"\([^"]*\)".*/\1/p'
+      ;;
+    *)
+      np_fetch
+      ;;
+  esac | LC_ALL=C tr -cd ' -~' | cut -c 1-200
+}
+
+np_poll() {
+  np_last=''
+  while :; do
+    np_now=$(np_title 2>/dev/null || true)
+    kill -0 "$$" 2>/dev/null || exit 0
+    if [ -n "$np_now" ] && [ "$np_now" != "$np_last" ]; then
+      np_last=$np_now
+      printf 'Now playing: %s\n' "$np_now"
+    fi
+    # Sleep in 1-second slices: kill -9 of the script skips every trap, and
+    # this bounds how long an orphaned poller can outlive its parent.
+    np_t=0
+    while [ "$np_t" -lt 15 ]; do
+      sleep 1
+      kill -0 "$$" 2>/dev/null || exit 0
+      np_t=$((np_t + 1))
+    done
+  done
+}
+
 printf '%s\n' "Playing $station — press q or Ctrl-C to stop."
+
+# ffplay used to be exec'd. It now runs as a background child under wait, for
+# two reasons: the EXIT trap must reap the poller, and a trapped signal is
+# deferred for as long as the shell waits on a FOREGROUND child — kill on the
+# script's PID would neither stop playback nor run any trap. POSIX guarantees
+# that wait returns the moment a trapped signal arrives, so INT/TERM forward
+# to ffplay immediately and its exit status becomes this script's, as it was
+# under exec. (Backgrounding does not detach ffplay from the terminal's
+# process group, so plain Ctrl-C still reaches it directly as well.)
+np_pid=''
+player_pid=''
+
+np_stop() {
+  # Capturing $? stops the trap from laundering the exit status: mksh would
+  # otherwise report the EXIT trap's own status (0) after Ctrl-C.
+  st=$?
+  if [ -n "$np_pid" ]; then
+    kill "$np_pid" 2>/dev/null || true
+  fi
+  return "$st"
+}
+
+forward() {
+  if [ -n "$player_pid" ]; then
+    kill -s "$1" "$player_pid" 2>/dev/null || true
+  else
+    exit "$2"
+  fi
+}
+
+trap np_stop EXIT
+trap 'forward INT 130' INT
+trap 'forward TERM 143' TERM
 
 # -reconnect_on_network_error needs FFmpeg >= 4.4; ffplay exits on options it
 # does not know, so 4.4 is this script's effective floor.
-exec ffplay \
+ffplay \
   -hide_banner \
   -nodisp \
   -nostats \
@@ -147,4 +248,20 @@ exec ffplay \
   -reconnect_on_network_error 1 \
   -reconnect_streamed 1 \
   -reconnect_delay_max 5 \
-  "$@"
+  "$@" &
+player_pid=$!
+
+if [ -n "$np_url" ] && command -v curl >/dev/null 2>&1; then
+  np_poll &
+  np_pid=$!
+fi
+
+# wait returns >128 when a trapped signal interrupts it, so loop until ffplay
+# has actually been reaped: radio reports ffplay's real exit status.
+st=0
+wait "$player_pid" || st=$?
+while kill -0 "$player_pid" 2>/dev/null; do
+  st=0
+  wait "$player_pid" || st=$?
+done
+exit "$st"

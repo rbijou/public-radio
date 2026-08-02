@@ -15,6 +15,7 @@
       [ T H R E E  S I G N A L S ]
 
  >> needs ffplay .............. FFmpeg >= 4.4
+ >> curl optional ............. "Now playing:" track titles
  >> ./install.sh .............. ~/.local/bin/radio
  >> q ......................... silence
 ```
@@ -86,6 +87,7 @@
              [ S A N  F R A N C I S C O ]
 
  >> radio giants
+ >> talk radio ................ no track titles
 ```
 
 ```
