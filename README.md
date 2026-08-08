@@ -16,8 +16,9 @@
 
  >> needs ffplay .............. FFmpeg >= 4.4
  >> curl optional ............. "Now playing:" track titles
+ >> RADIO_VIZ=1 ............... the art becomes a VU meter (needs ffmpeg)
  >> ./install.sh .............. ~/.local/bin/radio
- >> q ......................... silence
+ >> q ......................... silence (Ctrl-C when RADIO_VIZ is on)
 ```
 
 ```

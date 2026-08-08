@@ -24,6 +24,10 @@ chmod +x "$tmp/curl"
 
 PATH="$tmp:${PATH:-/usr/bin:/bin}"; export PATH
 
+# A developer's exported RADIO_VIZ must not leak into the non-visualizer
+# assertions below.
+unset RADIO_VIZ || :
+
 run_radio() {
   "$shell" "$root/bin/radio" "$@"
 }
@@ -243,6 +247,61 @@ if grep -F 'Now playing:' "$tmp/no-curl.out" >/dev/null; then
   echo 'expected no now-playing output without curl' >&2
   exit 1
 fi
+
+# Visualizer: RADIO_VIZ=force drives the ffmpeg -> ffplay pipeline with
+# stubs. The ffmpeg stub prints astats readings on its stderr — radio routes
+# that stderr into the renderer's FIFO — then streams fake PCM to the ffplay
+# stub, which drains it; the sleep keeps the pipeline open long enough for
+# the renderer to paint every frame before radio's EXIT trap reaps it. The
+# captured stdout must contain the art redrawn in the lit station color.
+viz=$tmp/viz
+mkdir "$viz"
+cat >"$viz/ffmpeg" <<EOF
+#!$shell
+printf '<%s>\n' "\$@" >"$viz/ffmpeg.args"
+i=0
+while [ "\$i" -lt 5 ]; do
+  printf '[Parsed_ametadata_1 @ 0x0] lavfi.astats.Overall.RMS_level=-6.2\n' >&2
+  i=\$((i + 1))
+done
+printf 'pcm'
+sleep 2
+EOF
+chmod +x "$viz/ffmpeg"
+cat >"$viz/ffplay" <<EOF
+#!$shell
+printf '<%s>\n' "\$@" >"$viz/ffplay.args"
+cat >/dev/null
+EOF
+chmod +x "$viz/ffplay"
+RADIO_VIZ=force PATH="$viz:$PATH" "$shell" "$root/bin/radio" liquid >"$tmp/viz.out"
+grep -F 'Playing Liquid DnB — press Ctrl-C to stop.' "$tmp/viz.out" >/dev/null
+grep -F "$(printf '\033[?25l')" "$tmp/viz.out" >/dev/null
+grep -F "$(printf '\033[?25h')" "$tmp/viz.out" >/dev/null
+grep -F "$(printf '\033[1;38;5;45m')" "$tmp/viz.out" >/dev/null
+grep -F '[ J A Z Z Y  D R U M  &  B A S S ]' "$tmp/viz.out" >/dev/null
+grep -F '<https://antares.dribbcast.com/proxy/dave1/stream/;>' "$viz/ffmpeg.args" >/dev/null
+grep -F 'astats=metadata=1' "$viz/ffmpeg.args" >/dev/null
+grep -Fx '<-nostdin>' "$viz/ffmpeg.args" >/dev/null
+grep -Fx '<->' "$viz/ffplay.args" >/dev/null
+grep -Fx '<-autoexit>' "$viz/ffplay.args" >/dev/null
+
+# RADIO_VIZ without ffmpeg warns once and falls back to the plain ffplay
+# invocation. The restricted PATH mirrors the no-curl test: only radio's hard
+# dependencies, no ffmpeg, no curl.
+noviz=$tmp/no-viz-ffmpeg
+mkdir "$noviz"
+cp "$tmp/ffplay" "$noviz/ffplay"
+ln -s "$(command -v cat)" "$noviz/cat"
+cat >"$noviz/printf" <<EOF
+#!$shell
+PATH='$PATH' exec printf "\$@"
+EOF
+chmod +x "$noviz/printf"
+RADIO_VIZ=1 PATH="$noviz" "$shell" "$root/bin/radio" liquid >"$tmp/no-viz.out" 2>&1
+grep -F 'RADIO_VIZ needs ffmpeg; playing without the visualizer' "$tmp/no-viz.out" >/dev/null
+grep -F 'Playing Liquid DnB — press q or Ctrl-C to stop.' "$tmp/no-viz.out" >/dev/null
+grep -F '<https://antares.dribbcast.com/proxy/dave1/stream/;>' "$tmp/no-viz.out" >/dev/null
 
 install_home="$tmp/install-home"
 HOME="$install_home" "$shell" "$root/install.sh" >/dev/null
