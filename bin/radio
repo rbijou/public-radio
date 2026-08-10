@@ -35,6 +35,63 @@ banner() {
   fi
 }
 
+np_pid=''
+viz_pid=''
+player_pid=''
+viz_dir=''
+viz_color=0
+
+np_stop() {
+  # Capturing $? stops the trap from laundering the exit status: mksh would
+  # otherwise report the EXIT trap's own status (0) after Ctrl-C.
+  st=$?
+  if [ -n "$np_pid" ]; then
+    kill "$np_pid" 2>/dev/null || true
+  fi
+  if [ -n "$viz_pid" ]; then
+    kill "$viz_pid" 2>/dev/null || true
+    # The renderer hides the cursor and may die before restoring it.
+    printf '\033[?25h'
+  fi
+  if [ -n "$viz_dir" ]; then
+    rm -rf "$viz_dir"
+  fi
+  return "$st"
+}
+
+# The EXIT trap is armed before the visualizer's tmpdir exists so no early
+# failure (a bad cookie, say) can leak it.
+trap np_stop EXIT
+
+# RADIO_VIZ=1 turns the station art into a live VU meter: rows light up from
+# the bottom in the station color as the stream gets louder. It needs ffmpeg
+# (not just ffplay) and a terminal; missing ffmpeg warns once and plays
+# exactly as before, and a non-terminal stdout skips the meter silently, the
+# way banner skips color. RADIO_VIZ=force waives the terminal check so the
+# tests can capture frames from a file.
+if [ -n "${RADIO_VIZ:-}" ]; then
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    printf '%s\n' 'radio: RADIO_VIZ needs ffmpeg; playing without the visualizer' >&2
+  elif [ -t 1 ] || [ "$RADIO_VIZ" = force ]; then
+    viz_dir=$(mktemp -d)
+    mkfifo "$viz_dir/meta"
+    : >"$viz_dir/np"
+    if [ -z "${NO_COLOR:-}" ]; then
+      viz_color=1
+    fi
+  fi
+fi
+
+# In visualizer mode the banner is not printed here: the art goes to a file so
+# the renderer can redraw it on every loudness reading.
+show_art() {
+  if [ -n "$viz_dir" ]; then
+    cat >"$viz_dir/art"
+  else
+    banner "$color"
+  fi
+}
+
 # Now-playing metadata source for the selected station; empty np_url means the
 # station has none (KNBR is talk programming, not tracks).
 np_url=''
@@ -56,7 +113,8 @@ case "$mode" in
       exit 1
     fi
 
-    banner 110 <<'ART'
+    color=110
+    show_art <<'ART'
                    .       *
        *       .                    .
                    _..._
@@ -89,7 +147,8 @@ ART
     ;;
 
   liquid)
-    banner 45 <<'ART'
+    color=45
+    show_art <<'ART'
                     .
                    / \
                   /   \
@@ -118,7 +177,8 @@ ART
     ;;
 
   giants)
-    banner 208 <<'ART'
+    color=208
+    show_art <<'ART'
                  .-""""""""-.
               .-'            '-.
             .'   /`-.      .-'\   '.
@@ -188,7 +248,15 @@ np_poll() {
     kill -0 "$$" 2>/dev/null || exit 0
     if [ -n "$np_now" ] && [ "$np_now" != "$np_last" ]; then
       np_last=$np_now
-      printf 'Now playing: %s\n' "$np_now"
+      if [ -n "$viz_dir" ]; then
+        # The renderer owns the terminal in visualizer mode; printing here
+        # would race its cursor movements. The title (already reduced to
+        # printable ASCII by np_title) is parked in a file the renderer reads
+        # on every frame instead.
+        printf '%s\n' "$np_now" >"$viz_dir/np"
+      else
+        printf 'Now playing: %s\n' "$np_now"
+      fi
     fi
     # Sleep in 1-second slices: kill -9 of the script skips every trap, and
     # this bounds how long an orphaned poller can outlive its parent.
@@ -201,7 +269,12 @@ np_poll() {
   done
 }
 
-printf '%s\n' "Playing $station — press q or Ctrl-C to stop."
+if [ -n "$viz_dir" ]; then
+  # ffplay's keyboard handling is lost once its stdin is the PCM pipe.
+  printf '%s\n' "Playing $station — press Ctrl-C to stop."
+else
+  printf '%s\n' "Playing $station — press q or Ctrl-C to stop."
+fi
 
 # ffplay used to be exec'd. It now runs as a background child under wait, for
 # two reasons: the EXIT trap must reap the poller, and a trapped signal is
@@ -211,18 +284,6 @@ printf '%s\n' "Playing $station — press q or Ctrl-C to stop."
 # to ffplay immediately and its exit status becomes this script's, as it was
 # under exec. (Backgrounding does not detach ffplay from the terminal's
 # process group, so plain Ctrl-C still reaches it directly as well.)
-np_pid=''
-player_pid=''
-
-np_stop() {
-  # Capturing $? stops the trap from laundering the exit status: mksh would
-  # otherwise report the EXIT trap's own status (0) after Ctrl-C.
-  st=$?
-  if [ -n "$np_pid" ]; then
-    kill "$np_pid" 2>/dev/null || true
-  fi
-  return "$st"
-}
 
 forward() {
   if [ -n "$player_pid" ]; then
@@ -232,24 +293,115 @@ forward() {
   fi
 }
 
-trap np_stop EXIT
 trap 'forward INT 130' INT
 trap 'forward TERM 143' TERM
 
-# -reconnect_on_network_error needs FFmpeg >= 4.4; ffplay exits on options it
-# does not know, so 4.4 is this script's effective floor.
-ffplay \
-  -hide_banner \
-  -nodisp \
-  -nostats \
-  -loglevel warning \
-  -reconnect 1 \
-  -reconnect_at_eof 1 \
-  -reconnect_on_network_error 1 \
-  -reconnect_streamed 1 \
-  -reconnect_delay_max 5 \
-  "$@" &
-player_pid=$!
+if [ -n "$viz_dir" ]; then
+  # One connection, one decode: ffmpeg pulls the stream, hands raw PCM to
+  # ffplay over a pipe, and an astats/ametadata filter in the same process
+  # reports one RMS loudness reading per 4800 samples (about ten a second).
+  # ametadata prints on ffmpeg's stderr, which is routed into a FIFO the awk
+  # renderer below reads — no second listener slot, no audio on disk. ffmpeg's
+  # other log lines share that stderr; the renderer ignores every line that is
+  # not an RMS reading.
+  #
+  # The renderer repaints the whole banner on each reading: rows above the
+  # level stay a dim ghost, rows below light up in the station color (with
+  # NO_COLOR, lit rows are drawn and unlit rows left blank). Loudness maps
+  # -50..-5 dB RMS onto the art's height, rising instantly and falling with a
+  # short decay so the meter breathes instead of flickering. It exits on its
+  # own when the FIFO's write side closes with ffmpeg.
+  LC_ALL=C awk \
+    -v artfile="$viz_dir/art" \
+    -v npfile="$viz_dir/np" \
+    -v color="$color" \
+    -v use_color="$viz_color" '
+    function draw(lv,    filled, i, np) {
+      filled = int(lv * nrows + 0.5)
+      if (drawn) printf "\033[%dA", nrows + 1
+      drawn = 1
+      for (i = 1; i <= nrows; i++) {
+        if (i > nrows - filled) {
+          if (use_color) printf "\033[2K\033[1;38;5;%dm%s\033[0m\n", color, art[i]
+          else printf "\033[2K%s\n", art[i]
+        } else if (use_color) {
+          printf "\033[2K\033[38;5;238m%s\033[0m\n", art[i]
+        } else {
+          printf "\033[2K\n"
+        }
+      }
+      np = ""
+      getline np < npfile
+      close(npfile)
+      if (np != "") printf "\033[2KNow playing: %s\n", np
+      else printf "\033[2K\n"
+      fflush()
+    }
+    BEGIN {
+      while ((getline line < artfile) > 0) art[++nrows] = line
+      close(artfile)
+      level = 0
+      printf "\033[?25l"
+      draw(0)
+    }
+    /lavfi\.astats\.Overall\.RMS_level=/ {
+      v = $0
+      sub(/.*=/, "", v)
+      if (v == "" || v ~ /inf|nan/) db = -50
+      else {
+        db = v + 0
+        if (db < -50) db = -50
+        if (db > -5) db = -5
+      }
+      target = (db + 50) / 45
+      if (target > level) level = target
+      else level = 0.6 * level + 0.4 * target
+      draw(level)
+    }
+  ' "$viz_dir/meta" &
+  viz_pid=$!
+
+  # -nostdin keeps backgrounded ffmpeg's hands off the terminal. The station
+  # input arguments in "$@" sit after the reconnect options (input options
+  # must precede their -i) exactly as they would for ffplay.
+  ffmpeg \
+    -hide_banner \
+    -nostats \
+    -nostdin \
+    -reconnect 1 \
+    -reconnect_at_eof 1 \
+    -reconnect_on_network_error 1 \
+    -reconnect_streamed 1 \
+    -reconnect_delay_max 5 \
+    "$@" \
+    -vn \
+    -af 'asetnsamples=n=4800,astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level,ametadata=mode=print:key=lavfi.astats.Overall.RMS_level' \
+    -f s16le -ac 2 -ar 48000 - 2>"$viz_dir/meta" \
+    | ffplay \
+        -hide_banner \
+        -nodisp \
+        -nostats \
+        -autoexit \
+        -loglevel error \
+        -f s16le -ac 2 -ar 48000 \
+        -i - &
+  player_pid=$!
+else
+  # -reconnect_on_network_error needs FFmpeg >= 4.4; ffplay exits on options it
+  # does not know, so 4.4 is this script's effective floor.
+  ffplay \
+    -hide_banner \
+    -nodisp \
+    -nostats \
+    -loglevel warning \
+    -reconnect 1 \
+    -reconnect_at_eof 1 \
+    -reconnect_on_network_error 1 \
+    -reconnect_streamed 1 \
+    -reconnect_delay_max 5 \
+    "$@" &
+  player_pid=$!
+fi
 
 if [ -n "$np_url" ] && command -v curl >/dev/null 2>&1; then
   np_poll &
