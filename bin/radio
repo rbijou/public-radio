@@ -3,7 +3,7 @@
 set -eu
 
 usage() {
-  printf '%s\n' 'Usage: radio {sleep|liquid|giants}' >&2
+  printf '%s\n' 'Usage: radio {sleep|liquid|giants|yacht}' >&2
 }
 
 if [ "$#" -ne 1 ]; then
@@ -13,7 +13,7 @@ fi
 
 mode=$1
 case "$mode" in
-  sleep|liquid|giants) ;;
+  sleep|liquid|giants|yacht) ;;
   *)
     usage
     exit 2
@@ -158,6 +158,38 @@ ART
     set -- -i 'https://playerservices.streamtheworld.com/api/livestream-redirect/KNBRAMAAC.aac'
     ;;
 
+  yacht)
+    banner 216 <<'ART'
+          \ | /               .
+        -- ( ) --            /|\
+          / | \             / | \
+                           /  |  \
+                          /   |   \
+                         /    |    \
+                        /     |     \
+                       /______|______\
+                 _____________|_____________
+                 \                         /
+            ~~~~~~\_______________________/~~~~~~
+          ~~~   ~~~~~     ~~~~   ~~~~~     ~~~~
+
+__   __ _    ____ _   _ _____ 
+\ \ / // \  / ___| | | |_   _|
+ \ V // _ \| |   | |_| | | |  
+  | |/ ___ \ |___|  _  | | |  
+  |_/_/   \_\____|_| |_| |_|  
+ [ S M O O T H  S A I L I N G ]
+
+ART
+    station='56 Yacht Rock Radio'
+    set -- -i 'https://cast4.my-control-panel.com/proxy/clearco1/stream'
+    # Centova Cast proxy in front of Shoutcast v2: currentsong is one line of
+    # plain text. The station pads its tags with runs of spaces; np_title
+    # squeezes them.
+    np_url='https://cast4.my-control-panel.com/proxy/clearco1/currentsong?sid=1'
+    np_kind='text'
+    ;;
+
 esac
 
 # Now playing: a background poller fetches the station's status endpoint and
@@ -183,7 +215,8 @@ np_title() {
   # blocklist misses the multi-byte forms. LC_ALL=C keeps sed and tr
   # byte-oriented (BSD builds abort on bytes invalid in a UTF-8 locale);
   # cut bounds the printed line and is safe here because the whitelist has
-  # already reduced the stream to single-byte characters.
+  # already reduced the stream to single-byte characters. tr -s collapses
+  # the runs of spaces some stations pad their tags with.
   case "$np_kind" in
     icecast)
       np_fetch | LC_ALL=C sed -n 's/.*"listenurl":"[^"]*nightjar\.mp3"[^}]*"title":"\([^"]*\)".*/\1/p'
@@ -191,7 +224,7 @@ np_title() {
     *)
       np_fetch
       ;;
-  esac | LC_ALL=C tr -cd ' -~' | cut -c 1-200
+  esac | LC_ALL=C tr -cd ' -~' | LC_ALL=C tr -s ' ' | cut -c 1-200
 }
 
 np_poll() {
