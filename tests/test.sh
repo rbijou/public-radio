@@ -50,6 +50,10 @@ run_radio giants >"$tmp/giants.out"
 grep -F '[ S A N  F R A N C I S C O ]' "$tmp/giants.out" >/dev/null
 grep -F '<https://playerservices.streamtheworld.com/api/livestream-redirect/KNBRAMAAC.aac>' "$tmp/giants.out" >/dev/null
 
+run_radio yacht >"$tmp/yacht.out"
+grep -F '[ S M O O T H  S A I L I N G ]' "$tmp/yacht.out" >/dev/null
+grep -F '<https://cast4.my-control-panel.com/proxy/clearco1/stream>' "$tmp/yacht.out" >/dev/null
+
 for argument in \
   -hide_banner -nodisp -nostats -reconnect -reconnect_at_eof \
   -reconnect_on_network_error -reconnect_streamed -reconnect_delay_max
@@ -79,19 +83,19 @@ if run_radio invalid >"$tmp/invalid.out" 2>&1; then
   echo 'expected an invalid station to fail' >&2
   exit 1
 fi
-grep -F 'Usage: radio {sleep|liquid|giants}' "$tmp/invalid.out" >/dev/null
+grep -F 'Usage: radio {sleep|liquid|giants|yacht}' "$tmp/invalid.out" >/dev/null
 
 if run_radio sleep unexpected >"$tmp/extra.out" 2>&1; then
   echo 'expected extra arguments to fail' >&2
   exit 1
 fi
-grep -F 'Usage: radio {sleep|liquid|giants}' "$tmp/extra.out" >/dev/null
+grep -F 'Usage: radio {sleep|liquid|giants|yacht}' "$tmp/extra.out" >/dev/null
 
 if run_radio >"$tmp/missing.out" 2>&1; then
   echo 'expected a missing station to fail' >&2
   exit 1
 fi
-grep -F 'Usage: radio {sleep|liquid|giants}' "$tmp/missing.out" >/dev/null
+grep -F 'Usage: radio {sleep|liquid|giants|yacht}' "$tmp/missing.out" >/dev/null
 
 mkdir "$tmp/no-ffplay"
 cat >"$tmp/no-ffplay/printf" <<EOF
@@ -136,6 +140,19 @@ rm -f "$np/fetched"
 PATH="$np:$PATH" "$shell" "$root/bin/radio" liquid >"$tmp/np-liquid.out"
 grep -F 'Now playing: Fixture Artist - Liquid Fixture' "$tmp/np-liquid.out" >/dev/null
 grep -F 'currentsong?sid=1' "$np/curl-liquid.args" >/dev/null
+
+# Yacht is the same plain-text currentsong kind, but the station pads its
+# tags with runs of spaces; the title must reach the terminal squeezed.
+cat >"$np/curl" <<EOF
+#!$shell
+printf '%s\n' "\$*" >>"$np/curl-yacht.args"
+printf 'Fixture   Skipper    -    Yacht     Fixture\n'
+: >"$np/fetched"
+EOF
+rm -f "$np/fetched"
+PATH="$np:$PATH" "$shell" "$root/bin/radio" yacht >"$tmp/np-yacht.out"
+grep -F 'Now playing: Fixture Skipper - Yacht Fixture' "$tmp/np-yacht.out" >/dev/null
+grep -F 'cast4.my-control-panel.com/proxy/clearco1/currentsong?sid=1' "$np/curl-yacht.args" >/dev/null
 
 # The sleep poller must receive the gate cookie via curl's arguments while the
 # environment stays scrubbed (radio unsets NITEJAR_COOKIE before spawning).
