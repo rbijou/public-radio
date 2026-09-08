@@ -96,6 +96,22 @@ if LC_ALL=C grep "$(printf '\033')" "$tmp/liquid.out" >/dev/null; then
   exit 1
 fi
 
+# CLICOLOR_FORCE paints the banner through a pipe in two tones: scene in the
+# station colour, wordmark bold from the first blank line, tag row dim. The
+# script is invoked directly: an assignment prefixed to a function call may
+# persist in the calling shell (bash as sh does), which would leak NO_COLOR
+# into every later test.
+CLICOLOR_FORCE=1 "$shell" "$root/bin/radio" liquid >"$tmp/color.out"
+LC_ALL=C grep -F "$(printf '\033[38;5;45m')" "$tmp/color.out" >/dev/null
+LC_ALL=C grep -F "$(printf '\033[1;38;5;45m')" "$tmp/color.out" >/dev/null
+LC_ALL=C grep -F "$(printf '\033[2;38;5;45m')          [ J A Z Z Y" "$tmp/color.out" >/dev/null
+# NO_COLOR wins over CLICOLOR_FORCE: not one escape byte.
+NO_COLOR=1 CLICOLOR_FORCE=1 "$shell" "$root/bin/radio" liquid >"$tmp/no-color.out"
+if LC_ALL=C grep "$(printf '\033')" "$tmp/no-color.out" >/dev/null; then
+  echo 'expected NO_COLOR to suppress every escape sequence' >&2
+  exit 1
+fi
+
 run_radio giants >"$tmp/giants.out"
 grep -F '[ S A N  F R A N C I S C O ]' "$tmp/giants.out" >/dev/null
 grep -F '<https://playerservices.streamtheworld.com/api/livestream-redirect/KNBRAMAAC.aac>' "$tmp/giants.out" >/dev/null
@@ -191,6 +207,20 @@ PATH="$np:$PATH" "$shell" "$root/bin/radio" liquid >"$tmp/np-liquid.out"
 grep -F ' >> now playing ............... Fixture Artist - Liquid Fixture' "$tmp/np-liquid.out" >/dev/null
 grep -F 'currentsong?sid=1' "$np/curl-liquid.args" >/dev/null
 
+# On a terminal the row is repainted in place (carriage return, clear line)
+# and the script leaves the cursor on a fresh line. COLUMNS is pinned so the
+# width does not depend on the developer's terminal.
+rm -f "$np/fetched"
+COLUMNS=80 CLICOLOR_FORCE=1 PATH="$np:$PATH" "$shell" "$root/bin/radio" liquid >"$tmp/np-pretty.out"
+# awk's index() rather than grep -F: ugrep, a common grep stand-in, reads the
+# carriage return inside a fixed pattern as a line break.
+LC_ALL=C awk -v row="$(printf '\r\033[2K') >> now playing ............... Fixture Artist - Liquid Fixture" \
+  'index($0, row) { found = 1 } END { exit !found }' "$tmp/np-pretty.out"
+if [ "$(tail -c 1 "$tmp/np-pretty.out" | od -An -c | tr -d ' ')" != '\n' ]; then
+  echo 'expected the in-place now-playing row to end with a newline' >&2
+  exit 1
+fi
+
 # Yacht is the same plain-text currentsong kind, but the station pads its
 # tags with runs of spaces; the title must reach the terminal squeezed.
 cat >"$np/curl" <<EOF
@@ -254,6 +284,15 @@ PATH="$np:$PATH" "$shell" "$root/bin/radio" liquid >"$tmp/np-flood.out"
 grep ' >> now playing ............... A\{200\}$' "$tmp/np-flood.out" >/dev/null
 if grep 'A\{201\}' "$tmp/np-flood.out" >/dev/null; then
   echo 'expected flooded titles to be truncated at 200 characters' >&2
+  exit 1
+fi
+# In place, the title is also cut to the terminal width minus the 32-column
+# leader so the row never wraps.
+rm -f "$np/fetched"
+COLUMNS=60 CLICOLOR_FORCE=1 PATH="$np:$PATH" "$shell" "$root/bin/radio" liquid >"$tmp/np-flood-pretty.out"
+LC_ALL=C grep 'A\{28\}$' "$tmp/np-flood-pretty.out" >/dev/null
+if LC_ALL=C grep 'A\{29\}' "$tmp/np-flood-pretty.out" >/dev/null; then
+  echo 'expected in-place titles to be cut to the terminal width' >&2
   exit 1
 fi
 

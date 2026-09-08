@@ -18,6 +18,7 @@
  >> curl optional ............. "now playing" track titles
  >> ./install.sh .............. ~/.local/bin/radio
  >> Ctrl-C .................... silence
+ >> NO_COLOR / CLICOLOR_FORCE . plain / forced color
 ```
 
 ```

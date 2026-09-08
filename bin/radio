@@ -25,14 +25,37 @@ command -v ffplay >/dev/null 2>&1 || {
   exit 1
 }
 
-banner() {
-  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    printf '\033[38;5;%sm' "$1"
+# Colour and in-place rows only on a terminal: NO_COLOR wins, CLICOLOR_FORCE
+# (the BSD/macOS convention ls honours) forces them through a pipe.
+pretty=0
+if [ -z "${NO_COLOR:-}" ] && { [ -t 1 ] || [ -n "${CLICOLOR_FORCE:-}" ]; }; then
+  pretty=1
+fi
+
+banner() {          # banner COLOUR <<ART  ->  scene, bold wordmark, dim tag
+  if [ "$pretty" -ne 1 ]; then
     cat
-    printf '\033[0m'
-  else
-    cat
+    return
   fi
+  # The first blank line starts the wordmark; the only bracketed row is the
+  # tag. IFS= read -r round-trips leading spaces and backslashes, so the
+  # heredocs stay byte-identical to the README.
+  printf '\033[38;5;%sm' "$1"
+  banner_part=scene
+  while IFS= read -r banner_line; do
+    case "$banner_part:$banner_line" in
+      scene:)
+        banner_part=mark
+        printf '\033[0m\033[1;38;5;%sm' "$1"
+        ;;
+      mark:*'[ '*' ]'*)
+        banner_part=tag
+        printf '\033[0m\033[2;38;5;%sm' "$1"
+        ;;
+    esac
+    printf '%s\n' "$banner_line"
+  done
+  printf '\033[0m'
 }
 
 card() {            # card LABEL [VALUE]  ->  " >> label ....... value"
@@ -235,12 +258,46 @@ np_title() {
   esac | LC_ALL=C tr -cd ' -~' | LC_ALL=C tr -s ' ' | cut -c 1-200
 }
 
+# The now-playing row's leader, as card 'now playing' prints it (32 columns).
+np_lead=' >> now playing ............... '
+
+np_width() {
+  # Title columns left on the row: COLUMNS if numeric, else tput cols (a soft
+  # dependency; prints 80 without a terminal), else 80. Anything narrower
+  # than 40 is a bogus size, not a terminal, so it also falls back to 80.
+  np_w=${COLUMNS:-}
+  case "$np_w" in
+    ''|*[!0123456789]*) np_w=$(tput cols 2>/dev/null || :) ;;
+  esac
+  case "$np_w" in
+    ''|*[!0123456789]*) np_w=80 ;;
+  esac
+  if [ "$np_w" -lt 40 ]; then
+    np_w=80
+  fi
+  printf '%s\n' $((np_w - ${#np_lead}))
+}
+
 np_poll() {
   np_last=''
+  # On a terminal the row appears at once as a placeholder and is repainted
+  # in place on every poll, cut to the terminal width so it never wraps (a
+  # wrapped line cannot be overwritten; the repaint also heals a row broken
+  # by an ffplay warning). Through a pipe rows append only when the title
+  # changes, so radio liquid | grep keeps working.
+  if [ "$pretty" -eq 1 ]; then
+    printf '%s' "$np_lead"
+  fi
   while :; do
     np_now=$(np_title 2>/dev/null || true)
     kill -0 "$$" 2>/dev/null || exit 0
-    if [ -n "$np_now" ] && [ "$np_now" != "$np_last" ]; then
+    if [ "$pretty" -eq 1 ]; then
+      if [ -n "$np_now" ]; then
+        printf '\r\033[2K%s%s' "$np_lead" "$(printf '%s' "$np_now" | cut -c 1-"$(np_width)")"
+      else
+        printf '\r\033[2K%s' "$np_lead"
+      fi
+    elif [ -n "$np_now" ] && [ "$np_now" != "$np_last" ]; then
       np_last=$np_now
       card 'now playing' "$np_now"
     fi
@@ -275,6 +332,10 @@ np_stop() {
   st=$?
   if [ -n "$np_pid" ]; then
     kill "$np_pid" 2>/dev/null || true
+  fi
+  # The in-place row has no newline of its own: land the prompt on a fresh one.
+  if [ "$pretty" -eq 1 ] && [ -n "$np_pid" ]; then
+    printf '\n'
   fi
   return "$st"
 }
