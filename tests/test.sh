@@ -23,6 +23,8 @@ printf '#!%s\nexit 1\n' "$shell" >"$tmp/curl"
 chmod +x "$tmp/curl"
 
 PATH="$tmp:${PATH:-/usr/bin:/bin}"; export PATH
+# A developer's shell must not flip the colour assertions below.
+unset CLICOLOR_FORCE NO_COLOR
 
 run_radio() {
   "$shell" "$root/bin/radio" "$@"
@@ -36,6 +38,44 @@ export NITEJAR_COOKIE
 "$shell" -n "$root/install.sh"
 "$shell" -n "$root/tests/test.sh"
 
+# bin/radio's quoted heredocs are the single source of the station art. README
+# fences 2..5 (sleep, liquid, giants, yacht, in usage order) must match them byte
+# for byte, trailing blank line included: docs and the phone page copy from the
+# script, never the other way round. Fence k's content sits between fence lines
+# 2k-1 and 2k, hence the counter test.
+art_of() {
+  awk -v n="$1" '/<<.ART.$/ { b++; next } /^ART$/ { if (b == n) exit } b == n' "$root/bin/radio"
+}
+readme_art() {
+  awk -v k="$1" '/^```$/ { n++; next } n == 2 * k - 1 && /^ >> / { exit } n == 2 * k - 1' "$root/README.md"
+}
+n=1
+for station in sleep liquid giants yacht; do
+  art_of "$n" >"$tmp/$station.art"
+  readme_art $((n + 1)) >"$tmp/$station.readme"
+  test -s "$tmp/$station.art"
+  if ! cmp -s "$tmp/$station.art" "$tmp/$station.readme"; then
+    diff "$tmp/$station.art" "$tmp/$station.readme" >&2 || true
+    echo "README art for $station drifted from bin/radio" >&2
+    exit 1
+  fi
+  n=$((n + 1))
+done
+
+# Art rows stay at most 50 columns (a 390 px phone) with no trailing whitespace.
+awk '/<<.ART.$/ { a = 1; next } /^ART$/ { a = 0 }
+     a && (length($0) > 50 || /[ \t]$/) {
+       print "bin/radio:" NR ": art wider than 50 columns or trailing whitespace"; bad = 1
+     }
+     END { exit bad }' "$root/bin/radio"
+
+# No 64-hex value (the shape of a Nitejar cookie) may ever be committed; the test
+# cookie above is generated at runtime for exactly this reason.
+if LC_ALL=C grep -rnE '[0-9a-f]{64}' "$root/bin" "$root/install.sh" "$root/README.md" "$root/tests" >&2; then
+  echo 'expected no 64-hex value in tracked files' >&2
+  exit 1
+fi
+
 run_radio sleep >"$tmp/sleep.out"
 unset NITEJAR_COOKIE
 grep -F '[ A M B I E N T ]' "$tmp/sleep.out" >/dev/null
@@ -45,6 +85,10 @@ grep -F "nj_awake=$test_cookie" "$tmp/sleep.out" >/dev/null
 run_radio liquid >"$tmp/liquid.out"
 grep -F '[ J A Z Z Y  D R U M  &  B A S S ]' "$tmp/liquid.out" >/dev/null
 grep -F '<https://antares.dribbcast.com/proxy/dave1/stream/;>' "$tmp/liquid.out" >/dev/null
+if LC_ALL=C grep "$(printf '\033')" "$tmp/liquid.out" >/dev/null; then
+  echo 'expected no escape sequences when stdout is not a terminal' >&2
+  exit 1
+fi
 
 run_radio giants >"$tmp/giants.out"
 grep -F '[ S A N  F R A N C I S C O ]' "$tmp/giants.out" >/dev/null
