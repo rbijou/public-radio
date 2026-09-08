@@ -15,9 +15,9 @@
        [ F O U R  S I G N A L S ]
 
  >> needs ffplay .............. FFmpeg >= 4.4
- >> curl optional ............. "Now playing:" track titles
+ >> curl optional ............. "now playing" track titles
  >> ./install.sh .............. ~/.local/bin/radio
- >> q ......................... silence
+ >> Ctrl-C .................... silence
 ```
 
 ```

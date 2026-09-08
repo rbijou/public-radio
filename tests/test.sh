@@ -38,6 +38,12 @@ export NITEJAR_COOKIE
 "$shell" -n "$root/install.sh"
 "$shell" -n "$root/tests/test.sh"
 
+# The script stays pure ASCII: no UTF-8 dashes or quotes in comments or copy.
+if LC_ALL=C grep -n '[^ -~]' "$root/bin/radio" >&2; then
+  echo 'expected bin/radio to be pure ASCII' >&2
+  exit 1
+fi
+
 # bin/radio's quoted heredocs are the single source of the station art. README
 # fences 2..5 (sleep, liquid, giants, yacht, in usage order) must match them byte
 # for byte, trailing blank line included: docs and the phone page copy from the
@@ -182,7 +188,7 @@ EOF
 chmod +x "$np/curl"
 rm -f "$np/fetched"
 PATH="$np:$PATH" "$shell" "$root/bin/radio" liquid >"$tmp/np-liquid.out"
-grep -F 'Now playing: Fixture Artist - Liquid Fixture' "$tmp/np-liquid.out" >/dev/null
+grep -F ' >> now playing ............... Fixture Artist - Liquid Fixture' "$tmp/np-liquid.out" >/dev/null
 grep -F 'currentsong?sid=1' "$np/curl-liquid.args" >/dev/null
 
 # Yacht is the same plain-text currentsong kind, but the station pads its
@@ -195,7 +201,7 @@ printf 'Fixture   Skipper    -    Yacht     Fixture\n'
 EOF
 rm -f "$np/fetched"
 PATH="$np:$PATH" "$shell" "$root/bin/radio" yacht >"$tmp/np-yacht.out"
-grep -F 'Now playing: Fixture Skipper - Yacht Fixture' "$tmp/np-yacht.out" >/dev/null
+grep -F ' >> now playing ............... Fixture Skipper - Yacht Fixture' "$tmp/np-yacht.out" >/dev/null
 grep -F 'cast4.my-control-panel.com/proxy/clearco1/currentsong?sid=1' "$np/curl-yacht.args" >/dev/null
 
 # The sleep poller must receive the gate cookie via curl's arguments while the
@@ -212,7 +218,7 @@ printf '%s' '{"icestats":{"source":[{"listenurl":"http://nitejar.net:8000/nightj
 EOF
 rm -f "$np/fetched"
 NITEJAR_COOKIE=$test_cookie PATH="$np:$PATH" "$shell" "$root/bin/radio" sleep >"$tmp/np-sleep.out"
-grep -F 'Now playing: Fixture - Ambient Track' "$tmp/np-sleep.out" >/dev/null
+grep -F ' >> now playing ............... Fixture - Ambient Track' "$tmp/np-sleep.out" >/dev/null
 grep -F "nj_awake=$test_cookie" "$np/curl-sleep.args" >/dev/null
 grep -F 'status-json.xsl' "$np/curl-sleep.args" >/dev/null
 
@@ -226,7 +232,7 @@ printf 'Bad\033[31mC1\302\233Title\r\n'
 EOF
 rm -f "$np/fetched"
 PATH="$np:$PATH" "$shell" "$root/bin/radio" liquid >"$tmp/np-escape.out"
-grep -F 'Now playing: Bad[31mC1Title' "$tmp/np-escape.out" >/dev/null
+grep -F ' >> now playing ............... Bad[31mC1Title' "$tmp/np-escape.out" >/dev/null
 if LC_ALL=C grep "$(printf '\033')" "$tmp/np-escape.out" >/dev/null; then
   echo 'expected control bytes to be stripped from titles' >&2
   exit 1
@@ -245,7 +251,7 @@ dd if=/dev/zero bs=1024 count=1024 2>/dev/null | tr '\\0' 'A'
 EOF
 rm -f "$np/fetched"
 PATH="$np:$PATH" "$shell" "$root/bin/radio" liquid >"$tmp/np-flood.out"
-grep 'Now playing: A\{200\}$' "$tmp/np-flood.out" >/dev/null
+grep ' >> now playing ............... A\{200\}$' "$tmp/np-flood.out" >/dev/null
 if grep 'A\{201\}' "$tmp/np-flood.out" >/dev/null; then
   echo 'expected flooded titles to be truncated at 200 characters' >&2
   exit 1
@@ -293,14 +299,15 @@ nocurl=$tmp/no-curl
 mkdir "$nocurl"
 cp "$tmp/ffplay" "$nocurl/ffplay"
 ln -s "$(command -v cat)" "$nocurl/cat"
+ln -s "$(command -v tr)" "$nocurl/tr"
 cat >"$nocurl/printf" <<EOF
 #!$shell
 PATH='$PATH' exec printf "\$@"
 EOF
 chmod +x "$nocurl/printf"
 PATH="$nocurl" "$shell" "$root/bin/radio" liquid >"$tmp/no-curl.out" 2>&1
-grep -F 'Playing Liquid DnB' "$tmp/no-curl.out" >/dev/null
-if grep -F 'Now playing:' "$tmp/no-curl.out" >/dev/null; then
+grep -F ' >> station ................... Liquid DnB' "$tmp/no-curl.out" >/dev/null
+if grep -F ' >> now playing' "$tmp/no-curl.out" >/dev/null; then
   echo 'expected no now-playing output without curl' >&2
   exit 1
 fi

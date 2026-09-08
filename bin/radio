@@ -35,6 +35,14 @@ banner() {
   fi
 }
 
+card() {            # card LABEL [VALUE]  ->  " >> label ....... value"
+  card_dots=$((26 - ${#1}))
+  if [ -n "${2-}" ] && [ "$card_dots" -gt 0 ]; then
+    printf ' >> %s %s %s\n' "$1" "$(printf "%${card_dots}s" '' | tr ' ' '.')" "$2"
+  elif [ -n "${2-}" ]; then printf ' >> %s %s\n' "$1" "$2"
+  else printf ' >> %s\n' "$1"; fi
+}
+
 # Now-playing metadata source for the selected station; empty np_url means the
 # station has none (KNBR is talk programming, not tracks).
 np_url=''
@@ -194,7 +202,7 @@ esac
 
 # Now playing: a background poller fetches the station's status endpoint and
 # prints the track title when it changes. Status endpoints, never a second
-# audio connection — a poll costs bytes, not a listener slot. curl is a soft
+# audio connection -- a poll costs bytes, not a listener slot. curl is a soft
 # dependency: without it the station plays exactly as before, just untitled.
 
 np_fetch() {
@@ -234,7 +242,7 @@ np_poll() {
     kill -0 "$$" 2>/dev/null || exit 0
     if [ -n "$np_now" ] && [ "$np_now" != "$np_last" ]; then
       np_last=$np_now
-      printf 'Now playing: %s\n' "$np_now"
+      card 'now playing' "$np_now"
     fi
     # Sleep in 1-second slices: kill -9 of the script skips every trap, and
     # this bounds how long an orphaned poller can outlive its parent.
@@ -247,11 +255,12 @@ np_poll() {
   done
 }
 
-printf '%s\n' "Playing $station — press q or Ctrl-C to stop."
+card station "$station"
+card Ctrl-C silence
 
 # ffplay used to be exec'd. It now runs as a background child under wait, for
 # two reasons: the EXIT trap must reap the poller, and a trapped signal is
-# deferred for as long as the shell waits on a FOREGROUND child — kill on the
+# deferred for as long as the shell waits on a FOREGROUND child -- kill on the
 # script's PID would neither stop playback nor run any trap. POSIX guarantees
 # that wait returns the moment a trapped signal arrives, so INT/TERM forward
 # to ffplay immediately and its exit status becomes this script's, as it was
